@@ -140,12 +140,6 @@ describe( 'Links', () => {
 
 		// Click on the Apply button
 		await page.click( 'button[aria-label="Apply"]' );
-
-		// Click somewhere else - it doesn't really matter where
-		// await page.click( '.editor-post-title' );
-
-		// Select the link again
-		// await page.click( 'a[href="https://wordpress.org/gutenberg"]' );
 	};
 
 	it( 'can be edited', async () => {

@@ -29,8 +29,32 @@ import { filterURLForDisplay } from '../../../utils/url';
 
 const stopKeyPropagation = ( event ) => event.stopPropagation();
 
+function getLinkAttributesFromFormat( { attributes: { href = '', target } = {} } = {} ) {
+	return { href, target };
+}
+
+function createLinkFormat( { href, opensInNewWindow } ) {
+	const format = {
+		type: 'a',
+		attributes: {
+			href,
+		},
+	};
+
+	if ( opensInNewWindow ) {
+		format.attributes.target = '_blank';
+		format.attributes.rel = 'noreferrer noopener';
+	}
+
+	return format;
+}
+
+function isShowingInput( props, state ) {
+	return props.addingLink || state.editLink;
+}
+
 class LinkContainer extends Component {
-	constructor( { record } ) {
+	constructor() {
 		super( ...arguments );
 
 		this.editLink = this.editLink.bind( this );
@@ -41,23 +65,24 @@ class LinkContainer extends Component {
 		this.setLinkTarget = this.setLinkTarget.bind( this );
 		this.resetState = this.resetState.bind( this );
 
-		this.state = {
-			inputValue: '',
-			opensInNewWindow: false,
-			lastSelection: record.selection,
-			selectionKey: 0,
-		};
+		this.state = {};
 	}
 
-	static getDerivedStateFromProps( { record }, state ) {
-		if ( record.selection === state.lastSelection ) {
-			return null;
+	static getDerivedStateFromProps( props, state ) {
+		const { href, target } = getLinkAttributesFromFormat( props.link );
+		const opensInNewWindow = target === '_blank';
+
+		if ( ! isShowingInput( props, state ) ) {
+			if ( href !== state.inputValue ) {
+				return { inputValue: href };
+			}
+
+			if ( opensInNewWindow !== state.opensInNewWindow ) {
+				return { opensInNewWindow };
+			}
 		}
 
-		return {
-			lastSelection: record.selection,
-			selectionKey: state.selectionKey + 1,
-		};
+		return null;
 	}
 
 	onKeyDown( event ) {
@@ -81,33 +106,17 @@ class LinkContainer extends Component {
 	}
 
 	setLinkTarget( opensInNewWindow ) {
+		this.setState( { opensInNewWindow } );
+
 		// Apply now if URL is not being edited.
-		if ( this.state.opensInNewWindow === null ) {
-			const { link } = this.props;
-
-			if ( opensInNewWindow ) {
-				link.attributes.target = '_blank';
-				link.attributes.rel = 'noreferrer noopener';
-			} else {
-				delete link.attributes.target;
-				delete link.attributes.rel;
-			}
-
-			this.props.applyFormat( link );
-		} else {
-			this.setState( { opensInNewWindow } );
+		if ( ! isShowingInput( this.props, this.state ) ) {
+			const { href } = getLinkAttributesFromFormat( this.props.link );
+			this.props.applyFormat( createLinkFormat( { href, opensInNewWindow } ) );
 		}
 	}
 
 	editLink( event ) {
-		const { link } = this.props;
-
-		this.setState( {
-			editLink: true,
-			inputValue: link.attributes.href,
-			opensInNewWindow: link.attributes.target === '_blank',
-		} );
-
+		this.setState( { editLink: true } );
 		event.preventDefault();
 	}
 
@@ -115,17 +124,7 @@ class LinkContainer extends Component {
 		const { link, record } = this.props;
 		const { inputValue, opensInNewWindow } = this.state;
 		const href = prependHTTP( inputValue );
-		const format = {
-			type: 'a',
-			attributes: {
-				href,
-			},
-		};
-
-		if ( opensInNewWindow ) {
-			format.attributes.target = '_blank';
-			format.attributes.rel = 'noreferrer noopener';
-		}
+		const format = createLinkFormat( { href, opensInNewWindow } );
 
 		if ( isCollapsed( record ) ) {
 			const toInsert = applyFormat( create( href ), format, 0, href.length );
@@ -145,41 +144,38 @@ class LinkContainer extends Component {
 
 	resetState() {
 		this.props.stopAddingLink();
-		this.setState( {
-			inputValue: '',
-			opensInNewWindow: false,
-			editLink: false,
-		} );
+		this.setState( { editLink: false } );
 	}
 
 	render() {
-		const { link, addingLink } = this.props;
+		const { link, addingLink, record } = this.props;
 
 		if ( ! link && ! addingLink ) {
 			return null;
 		}
 
-		const { inputValue, settingsVisible, opensInNewWindow, selectionKey } = this.state;
+		const { inputValue, settingsVisible, opensInNewWindow } = this.state;
+		const { href } = getLinkAttributesFromFormat( link );
+		const showInput = isShowingInput( this.props, this.state );
+
 		const linkSettings = settingsVisible && (
 			<div className="editor-format-toolbar__link-modal-line editor-format-toolbar__link-settings">
 				<ToggleControl
 					label={ __( 'Open in New Window' ) }
-					checked={ opensInNewWindow === null ? link.attributes.target === '_blank' : opensInNewWindow }
+					checked={ opensInNewWindow }
 					onChange={ this.setLinkTarget } />
 			</div>
 		);
-
-		const showInput = ( addingLink || this.state.editLink );
 
 		return (
 			<Fill name="RichText.Siblings">
 				<PositionedAtSelection
 					className="editor-format-toolbar__link-container"
-					key={ selectionKey /* Used to force rerender on selection change */ }
+					key={ `${ record.start }${ record.end }` /* Used to force rerender on selection change */ }
 				>
 					<Popover
 						position="bottom center"
-						focusOnMount={ addingLink ? 'firstElement' : false }
+						focusOnMount={ showInput ? 'firstElement' : false }
 						onClickOutside={ this.resetState }
 					>
 						{ showInput && (
@@ -217,9 +213,9 @@ class LinkContainer extends Component {
 								<div className="editor-format-toolbar__link-modal-line">
 									<ExternalLink
 										className="editor-format-toolbar__link-value"
-										href={ link.attributes.href }
+										href={ href }
 									>
-										{ link.attributes.href && filterURLForDisplay( decodeURI( link.attributes.href ) ) }
+										{ filterURLForDisplay( decodeURI( href ) ) }
 									</ExternalLink>
 									<IconButton icon="edit" label={ __( 'Edit' ) } onClick={ this.editLink } />
 									<IconButton
