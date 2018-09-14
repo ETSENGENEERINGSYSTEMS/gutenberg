@@ -198,6 +198,8 @@ describe( 'create', () => {
 				endContainer: element.querySelector( 'img' ),
 			} ),
 			record: {
+				start: 0,
+				end: 1,
 				formats: [ [ em, img ] ],
 				text: '',
 			},
@@ -294,6 +296,7 @@ describe( 'create', () => {
 			} ),
 			record: {
 				start: 1,
+				end: 3,
 				formats: [ , , , , , , , , ],
 				text: 'one\n\ntwo',
 			},

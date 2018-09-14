@@ -25,13 +25,17 @@ function createElement( html ) {
 	return htmlDocument.body;
 }
 
+function getEmptyRecord() {
+	return { formats: [], text: '' };
+}
+
 /**
- * Creates rich text value and selection objects from a DOM element and range.
+ * Creates a rich text record from a DOM element and range.
  *
- * @param {HTMLElement} element      Element to create value object from.
- * @param {Range}       range        Range to create selection object from.
- * @param {string}      multilineTag Multiline tag if the structure is multiline.
- * @param {Object}      settings     Settings passed to `createRecord`.
+ * @param {Element} element      Element to create record from.
+ * @param {Range}   range        Range to create record from.
+ * @param {string}  multilineTag Multiline tag if the structure is multiline.
+ * @param {Object}  settings     Settings passed to `createRecord`.
  *
  * @return {Object} A rich text record.
  */
@@ -44,65 +48,15 @@ export function create( element, range, multilineTag, settings ) {
 		return createRecord( element, range, settings );
 	}
 
-	const emptyRecord = {
-		formats: [],
-		text: '',
-	};
-
-	if ( ! element || ! element.hasChildNodes() ) {
-		return emptyRecord;
-	}
-
-	const children = Array.from( element.children )
-		.filter( ( { nodeName } ) => nodeName.toLowerCase() === multilineTag );
-	const maxIndex = children.length - 1;
-
-	if ( maxIndex < 0 ) {
-		return emptyRecord;
-	}
-
-	return children.reduce( ( accumulator, node, index ) => {
-		const { start, end, text, formats } = createRecord( node, range, settings );
-		const length = accumulator.text.length;
-
-		if ( range ) {
-			if ( start !== undefined ) {
-				accumulator.start = length + start;
-			} else if (
-				node.parentNode === range.startContainer &&
-				node === range.startContainer.childNodes[ range.startOffset ]
-			) {
-				accumulator.start = length;
-			}
-
-			if ( end !== undefined ) {
-				accumulator.end = length + end;
-			} else if (
-				node.parentNode === range.endContainer &&
-				node === range.endContainer.childNodes[ range.endOffset - 1 ]
-			) {
-				accumulator.end = length + text.length;
-			}
-		}
-
-		accumulator.formats = accumulator.formats.concat( formats );
-		accumulator.text += text;
-
-		if ( index !== maxIndex ) {
-			accumulator.formats = accumulator.formats.concat( [ , , ] );
-			accumulator.text += '\n\n';
-		}
-
-		return accumulator;
-	}, emptyRecord );
+	return createRecordFromMultilineElement( element, range, multilineTag, settings );
 }
 
 /**
- * Creates a rich text value object from a DOM element.
+ * Creates a rich text record from a DOM element.
  *
- * @param {HTMLElement} element      Element to create value object from.
- * @param {string}      multilineTag Multiline tag.
- * @param {Object}      settings     Settings passed to `createRecord`.
+ * @param {Element} element      Element to create value object from.
+ * @param {string}  multilineTag Multiline tag.
+ * @param {Object}  settings     Settings passed to `createRecord`.
  *
  * @return {Object} A rich text value object.
  */
@@ -111,32 +65,102 @@ export function createValue( element, multilineTag, settings ) {
 }
 
 /**
- * Creates rich text value and selection objects from a DOM element and range.
+ * Helper to accumulate the record's selection start and end from the current
+ * node and range.
  *
- * @param {HTMLElement} element                  Element to create value object
- *                                               from.
- * @param {Range}       range                    Range to create selection object
- *                                               from.
- * @param {Object}      settings                 Settings object.
- * @param {Function}    settings.removeNodeMatch Function to declare whether the
- *                                               given node should be removed.
- * @param {Function}    settings.unwrapNodeMatch Function to declare whether the
- *                                               given node should be unwrapped.
- * @param {Function}    settings.filterString    Function to filter the given
- *                                               string.
- * @param {Function}    settings.removeAttribute Match Wether to remove an attribute
- *                                               based on the name.
+ * @param {Object} accumulator Object to accumulate into.
+ * @param {Node}   node        Node to create record with.
+ * @param {Range}  range       Range to create record with.
+ * @param {Object} record      Record that is being accumulated.
+ */
+function accumulateSelection( accumulator, node, range, record ) {
+	if ( ! range ) {
+		return;
+	}
+
+	const { parentNode } = node;
+	const { startContainer, startOffset, endContainer, endOffset } = range;
+	const currentLength = accumulator.text.length;
+
+	// Selection can be extracted from record.
+	if ( record.start !== undefined ) {
+		accumulator.start = currentLength + record.start;
+	// Range indicates that the current node has selection.
+	} else if ( node === startContainer ) {
+		accumulator.start = currentLength + startOffset;
+	// Range indicates that the current node is selected.
+	} else if (
+		parentNode === startContainer &&
+		node === startContainer.childNodes[ startOffset ]
+	) {
+		accumulator.start = currentLength;
+	}
+
+	// Selection can be extracted from record.
+	if ( record.end !== undefined ) {
+		accumulator.end = currentLength + record.end;
+	// Range indicates that the current node has selection.
+	} else if ( node === endContainer ) {
+		accumulator.end = currentLength + endOffset;
+	// Range indicates that the current node is selected.
+	} else if (
+		parentNode === endContainer &&
+		node === endContainer.childNodes[ endOffset - 1 ]
+	) {
+		accumulator.end = currentLength + record.text.length;
+	}
+}
+
+/**
+ * Adjusts the start and end offsets from a range based on a text filter.
+ *
+ * @param {Node}     node   Node of which the text should be filtered.
+ * @param {Range}    range  The range to filter.
+ * @param {Function} filter Function to use to filter the text.
+ *
+ * @return {?Object} Object containing range properties.
+ */
+function filterRange( node, range, filter ) {
+	if ( ! range ) {
+		return;
+	}
+
+	const { startContainer, endContainer } = range;
+	let { startOffset, endOffset } = range;
+
+	if ( node === startContainer ) {
+		startOffset = filter( node.nodeValue.slice( 0, startOffset ) ).length;
+	}
+
+	if ( node === endContainer ) {
+		endOffset = filter( node.nodeValue.slice( 0, endOffset ) ).length;
+	}
+
+	return { startContainer, startOffset, endContainer, endOffset };
+}
+
+/**
+ * Creates a rich text record from a DOM element and range.
+ *
+ * @param {Element}  element                  ELement to create record with.
+ * @param {Range}    range                    Range to create record with.
+ * @param {Object}   settings                 Settings object.
+ * @param {Function} settings.removeNodeMatch Function to declare whether the
+ *                                            given node should be removed.
+ * @param {Function} settings.unwrapNodeMatch Function to declare whether the
+ *                                            given node should be unwrapped.
+ * @param {Function} settings.filterString    Function to filter the given
+ *                                            string.
+ * @param {Function} settings.removeAttribute Match Wether to remove an
+ *                                            attribute based on the name.
  *
  * @return {Object} A rich text record.
  */
 function createRecord( element, range, settings = {} ) {
-	const emptyRecord = {
-		formats: [],
-		text: '',
-	};
+	const accumulator = getEmptyRecord();
 
 	if ( ! element || ! element.hasChildNodes() ) {
-		return emptyRecord;
+		return accumulator;
 	}
 
 	const {
@@ -145,81 +169,43 @@ function createRecord( element, range, settings = {} ) {
 		filterString = ( string ) => string,
 		removeAttributeMatch,
 	} = settings;
-
 	// Remove any line breaks in text nodes. They are not content, but used to
 	// format the HTML. Line breaks in HTML are stored as BR elements.
 	const filterStringComplete = ( string ) => filterString( string.replace( '\n', '' ) );
+	const length = element.childNodes.length;
 
-	return Array.from( element.childNodes ).reduce( ( accumulator, node ) => {
+	// Optimise for speed.
+	for ( let index = 0; index < length; index++ ) {
+		const node = element.childNodes[ index ];
+
 		if ( node.nodeType === TEXT_NODE ) {
-			const nodeValue = node.nodeValue;
-			const text = filterStringComplete( nodeValue );
-
-			if ( range ) {
-				const textLength = accumulator.text.length;
-
-				if ( node === range.startContainer ) {
-					const charactersBefore = nodeValue.slice( 0, range.startOffset );
-					const lengthBefore = filterStringComplete( charactersBefore ).length;
-					accumulator.start = textLength + lengthBefore;
-				}
-
-				if ( node === range.endContainer ) {
-					const charactersBefore = nodeValue.slice( 0, range.endOffset );
-					const lengthBefore = filterStringComplete( charactersBefore ).length;
-					accumulator.end = textLength + lengthBefore;
-				}
-
-				if (
-					node.parentNode === range.startContainer &&
-					node === range.startContainer.childNodes[ range.startOffset ]
-				) {
-					accumulator.start = textLength;
-				}
-
-				if (
-					node.parentNode === range.endContainer &&
-					node === range.endContainer.childNodes[ range.endOffset - 1 ]
-				) {
-					accumulator.end = textLength + text.length;
-				}
-			}
-
+			const text = filterStringComplete( node.nodeValue );
+			range = filterRange( node, range, filterStringComplete );
+			accumulateSelection( accumulator, node, range, { text } );
 			accumulator.text += text;
 			// Create a sparse array of the same length as `text`, in which
 			// formats can be added.
 			accumulator.formats.length += text.length;
-			return accumulator;
+			continue;
 		}
 
-		if ( node.nodeType !== ELEMENT_NODE || removeNodeMatch( node ) ) {
-			return accumulator;
+		if ( node.nodeType !== ELEMENT_NODE ) {
+			continue;
 		}
 
-		if ( range ) {
-			if (
-				node.parentNode === range.startContainer &&
-				node === range.startContainer.childNodes[ range.startOffset ]
-			) {
-				accumulator.start = accumulator.text.length;
-			}
-
-			if (
-				node.parentNode === range.endContainer &&
-				node === range.endContainer.childNodes[ range.endOffset - 1 ]
-			) {
-				accumulator.end = accumulator.text.length;
-			}
+		if (
+			removeNodeMatch( node ) ||
+			( unwrapNodeMatch( node ) && ! node.hasChildNodes() )
+		) {
+			accumulateSelection( accumulator, node, range, getEmptyRecord() );
+			continue;
 		}
 
 		if ( node.nodeName === 'BR' ) {
-			if ( unwrapNodeMatch( node ) ) {
-				return accumulator;
-			}
-
+			accumulateSelection( accumulator, node, range, getEmptyRecord() );
 			accumulator.text += '\n';
 			accumulator.formats.length += 1;
-			return accumulator;
+			continue;
 		}
 
 		let format;
@@ -234,19 +220,11 @@ function createRecord( element, range, settings = {} ) {
 		const text = record.text;
 		const start = accumulator.text.length;
 
-		// Expand range if it ends in this node.
-		if ( range ) {
-			if (
-				node.parentNode === range.endContainer &&
-				node === range.endContainer.childNodes[ range.endOffset - 1 ]
-			) {
-				accumulator.end = start + text.length;
-			}
-		}
+		accumulateSelection( accumulator, node, range, record );
 
 		// Don't apply the element as formatting if it has no content.
 		if ( isEmpty( record ) && format && ! format.attributes ) {
-			return accumulator;
+			continue;
 		}
 
 		const { formats } = accumulator;
@@ -264,46 +242,86 @@ function createRecord( element, range, settings = {} ) {
 
 			let i = record.formats.length;
 
+			// Optimise for speed.
 			while ( i-- ) {
-				const index = start + i;
+				const formatIndex = start + i;
 
 				if ( format ) {
-					if ( formats[ index ] ) {
-						formats[ index ].push( format );
+					if ( formats[ formatIndex ] ) {
+						formats[ formatIndex ].push( format );
 					} else {
-						formats[ index ] = [ format ];
+						formats[ formatIndex ] = [ format ];
 					}
 				}
 
 				if ( record.formats[ i ] ) {
-					if ( formats[ index ] ) {
-						formats[ index ].push( ...record.formats[ i ] );
+					if ( formats[ formatIndex ] ) {
+						formats[ formatIndex ].push( ...record.formats[ i ] );
 					} else {
-						formats[ index ] = record.formats[ i ];
+						formats[ formatIndex ] = record.formats[ i ];
 					}
 				}
 			}
 		}
+	}
 
-		if ( record.start !== undefined ) {
-			accumulator.start = start + record.start;
-		}
+	return accumulator;
+}
 
-		if ( record.end !== undefined ) {
-			accumulator.end = start + record.end;
-		}
+/**
+ * Creates a rich text record from a DOM element and range that should be
+ * multiline.
+ *
+ * @param {Element} element      Element to create record from.
+ * @param {Range}   range        Range to create record from.
+ * @param {string}  multilineTag Multiline tag if the structure is multiline.
+ * @param {Object}  settings     Settings passed to `createRecord`.
+ *
+ * @return {Object} A rich text record.
+ */
+function createRecordFromMultilineElement( element, range, multilineTag, settings ) {
+	const accumulator = getEmptyRecord();
 
+	if ( ! element || ! element.hasChildNodes() ) {
 		return accumulator;
-	}, emptyRecord );
+	}
+
+	const length = element.children.length;
+
+	// Optimise for speed.
+	for ( let index = 0; index < length; index++ ) {
+		const node = element.children[ index ];
+
+		if ( node.nodeName.toLowerCase() !== multilineTag ) {
+			continue;
+		}
+
+		const record = createRecord( node, range, settings );
+
+		accumulateSelection( accumulator, node, range, record );
+
+		// Multiline record text should be separated by a double line break.
+		if ( index !== 0 ) {
+			accumulator.formats = accumulator.formats.concat( [ , , ] );
+			accumulator.text += '\n\n';
+		}
+
+		accumulator.formats = accumulator.formats.concat( record.formats );
+		accumulator.text += record.text;
+	}
+
+	return accumulator;
 }
 
 /**
  * Gets the attributes of an element in object shape.
  *
- * @param {HTMLElement} element                       Element to get attributes from.
- * @param {Function}    settings.removeAttributeMatch Function whose return value
- *                                                    determines whether or not to
- *                                                    remove an attribute based on name.
+ * @param {Element}  element                       Element to get attributes
+ *                                                 from.
+ * @param {Function} settings.removeAttributeMatch Function whose return value
+ *                                                 determines whether or not to
+ *                                                 remove an attribute based on
+ *                                                 name.
  *
  * @return {?Object} Attribute object or `undefined` if the element has no
  *                   attributes.
@@ -315,12 +333,20 @@ function getAttributes( element, {
 		return;
 	}
 
-	return Array.from( element.attributes ).reduce( ( accumulator, { name, value } ) => {
-		if ( ! removeAttributeMatch( name ) ) {
-			accumulator = accumulator || {};
-			accumulator[ name ] = value;
+	const length = element.attributes.length;
+	let accumulator;
+
+	// Optimise for speed.
+	for ( let i = 0; i < length; i++ ) {
+		const { name, value } = element.attributes[ i ];
+
+		if ( removeAttributeMatch( name ) ) {
+			continue;
 		}
 
-		return accumulator;
-	}, undefined );
+		accumulator = accumulator || {};
+		accumulator[ name ] = value;
+	}
+
+	return accumulator;
 }
